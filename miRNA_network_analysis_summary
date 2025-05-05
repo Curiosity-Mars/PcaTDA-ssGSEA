@@ -1,0 +1,126 @@
+
+# ==================================================
+# 📦 Install Required Libraries (First time only)
+# ==================================================
+!pip install -q python-louvain
+
+# ==================================================
+# 📚 Import Libraries
+# ==================================================
+import pandas as pd
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+from google.colab import drive
+import community.community_louvain as community_louvain
+import os
+import matplotlib.patches as mpatches
+from matplotlib.cm import get_cmap
+
+# ==================================================
+# 📂 Mount Google Drive & Load Data
+# ==================================================
+drive.mount('/content/drive')
+
+expr_path = '/content/drive/MyDrive/GSE290219_Processed_data_files.csv'
+expr_df = pd.read_csv(expr_path, index_col=0)
+
+comm_path = '/content/drive/MyDrive/B-0123BPH_communities_detailed.csv'
+comm_df = pd.read_csv(comm_path)
+
+# ==================================================
+# 📋 Sample Group Definition
+# ==================================================
+group_list = {
+    'BPH': ["WXH.tpm", "XW.tpm", "ZGA.tpm"],
+    'Early': ["CAG.tpm", "CYC.tpm", "HLZ.tpm"],
+    'Local': ["HQ.tpm", "LCY.tpm", "PWJ.tpm"],
+    'Metastasis': ["QCL.tpm", "WJQ.tpm", "WWC1.tpm"]
+}
+
+# ==================================================
+# 🎨 Visualization: Community Structure
+# ==================================================
+def visualize_community_structure(group):
+    data = expr_df[group_list[group]]
+    data = data.loc[(data != 0).any(axis=1)]
+    
+    cor_matrix = data.T.corr().fillna(0)
+    np.fill_diagonal(cor_matrix.values, 0)
+
+    edges = [
+        (i, j, cor_matrix.loc[i, j])
+        for i in cor_matrix.index for j in cor_matrix.columns
+        if i < j and cor_matrix.loc[i, j] > 0.8
+    ]
+    
+    G = nx.Graph()
+    G.add_weighted_edges_from(edges)
+    
+    comm_map = dict(zip(comm_df['miRNA'], comm_df['Community']))
+    nx.set_node_attributes(G, comm_map, 'community')
+    
+    unique_comms = sorted(set(comm_map[n] for n in G.nodes if n in comm_map))
+    color_map = get_cmap('Set3')
+    community_color_dict = {c: color_map(i / len(unique_comms)) for i, c in enumerate(unique_comms)}
+    node_colors = [community_color_dict.get(G.nodes[n].get('community'), (0.5, 0.5, 0.5)) for n in G.nodes]
+    
+    pos = nx.spring_layout(G, seed=42)
+    plt.figure(figsize=(8, 6))
+    nx.draw_networkx_nodes(G, pos, node_size=25, node_color=node_colors, alpha=0.8)
+    nx.draw_networkx_edges(G, pos, alpha=0.05, width=0.5)
+    plt.title(f"Community structure - {group}")
+    
+    legend_handles = [mpatches.Patch(color=community_color_dict[c], label=c) for c in unique_comms]
+    plt.legend(handles=legend_handles, title="Communities", loc='best', fontsize=9, title_fontsize=10)
+    
+    plt.axis('off')
+    plt.tight_layout()
+    plt.show()
+
+# ==================================================
+# 📏 Coherence Calculation
+# ==================================================
+def calculate_coherence(group):
+    data = expr_df[group_list[group]]
+    data = data.loc[(data != 0).any(axis=1)]
+
+    print("▶ Average intra-community correlation:
+")
+    for comm in sorted(comm_df['Community'].unique()):
+        mirnas = comm_df[comm_df['Community'] == comm]['miRNA']
+        valid_mirnas = [m for m in mirnas if m in data.index]
+        if len(valid_mirnas) < 2:
+            print(f"{comm}: skipped (not enough miRNAs)")
+            continue
+        expr_subset = data.loc[valid_mirnas].T
+        corr_matrix = expr_subset.corr()
+        avg_corr = corr_matrix.where(~np.eye(corr_matrix.shape[0], dtype=bool)).mean().mean()
+        print(f"{comm}: Avg correlation = {avg_corr:.3f}")
+
+# ==================================================
+# 📊 Variability Calculation
+# ==================================================
+def calculate_variability(group):
+    data = expr_df[group_list[group]]
+    data = data.loc[(data != 0).any(axis=1)]
+
+    print("▶ Mean standard deviation (expression variability):
+")
+    for comm in sorted(comm_df['Community'].unique()):
+        mirnas = comm_df[comm_df['Community'] == comm]['miRNA']
+        valid_mirnas = [m for m in mirnas if m in data.index]
+        if len(valid_mirnas) < 2:
+            print(f"{comm}: skipped (not enough miRNAs)")
+            continue
+        expr_subset = data.loc[valid_mirnas]
+        std_series = expr_subset.std(axis=1)
+        mean_std = std_series.mean()
+        print(f"{comm}: Mean SD = {mean_std:.4f}")
+
+# ==================================================
+# ▶ Example Execution
+# ==================================================
+visualize_community_structure('BPH')
+calculate_coherence('BPH')
+calculate_variability('BPH')
