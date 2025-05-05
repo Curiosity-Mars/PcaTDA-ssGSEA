@@ -1,0 +1,124 @@
+# --- Install required library ---
+!pip install -q python-louvain
+
+# --- Import libraries ---
+import pandas as pd
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+from google.colab import drive
+import community.community_louvain as community_louvain
+import os
+import matplotlib.patches as mpatches
+from matplotlib.cm import get_cmap
+
+# --- Mount Google Drive ---
+drive.mount('/content/drive')
+
+# --- Load miRNA expression data (rows: miRNAs, columns: samples) ---
+expr_path = '/content/drive/MyDrive/GSE290219_Processed_data_files.csv'
+expr_df = pd.read_csv(expr_path, index_col=0)
+
+# --- Load community assignment file (Early group only) ---
+comm_path = '/content/drive/MyDrive/E-0123 Early_communities_detailed.csv'
+comm_df = pd.read_csv(comm_path)
+
+# --- Sample group definition ---
+group_list = {
+    'Early': ["CAG.tpm", "CYC.tpm", "HLZ.tpm"]
+}
+
+# --- Network construction for the Early group ---
+COR_THRESHOLD = 0.8
+group = 'Early'
+columns = group_list[group]
+sub_data = expr_df[columns]
+sub_data = sub_data.loc[(sub_data != 0).any(axis=1)]  # Remove miRNAs with zero expression
+
+# --- Compute correlation matrix and define edges ---
+cor_matrix = sub_data.T.corr().fillna(0)
+np.fill_diagonal(cor_matrix.values, 0)
+edges = [
+    (i, j, cor_matrix.loc[i, j])
+    for i in cor_matrix.index for j in cor_matrix.columns
+    if i < j and cor_matrix.loc[i, j] > COR_THRESHOLD
+]
+
+# --- Build the network ---
+G = nx.Graph()
+G.add_weighted_edges_from(edges)
+
+# --- Assign community attribute to each node ---
+comm_map = dict(zip(comm_df['miRNA'], comm_df['Community']))
+nx.set_node_attributes(G, comm_map, 'community')
+unique_comms = sorted(set(comm_map[n] for n in G.nodes if n in comm_map))
+
+# --- Visualization ---
+color_map = get_cmap('Set3')
+community_color_dict = {c: color_map(i / len(unique_comms)) for i, c in enumerate(unique_comms)}
+node_colors = [community_color_dict.get(G.nodes[n].get('community'), (0.5, 0.5, 0.5)) for n in G.nodes]
+
+plt.figure(figsize=(8, 6))
+pos = nx.spring_layout(G, seed=42)
+nx.draw_networkx_nodes(G, pos, node_size=60, node_color=node_colors, alpha=0.95)
+nx.draw_networkx_edges(G, pos, alpha=0.03, width=0.3)
+plt.title("Community structure - Early")
+legend_handles = [mpatches.Patch(color=community_color_dict[c], label=c) for c in unique_comms]
+plt.legend(handles=legend_handles, title="Communities", loc='best', fontsize=9, title_fontsize=10)
+plt.axis('off')
+plt.tight_layout()
+plt.show()
+
+# --- Search for previously reported miRNAs ---
+print("\n▶ Searching for previously reported miRNAs in Early communities...\n")
+target_miRNAs = [
+    'hsa-miR-6715b-3p',
+    'hsa-miR-21-5p',
+    'hsa-miR-18a-5p',
+    'hsa-miR-4433a-3p',
+    'hsa-miR-4433b-5p'
+]
+for miRNA in target_miRNAs:
+    found = comm_df[comm_df['miRNA'] == miRNA]
+    if not found.empty:
+        community = found.iloc[0]['Community']
+        centrality = found.iloc[0]['Centrality']
+        print(f"{miRNA} is found in community {community} (centrality = {centrality:.4f})")
+    else:
+        print(f"{miRNA} is NOT found in any Early community.")
+
+# --- Calculate coherence (average correlation) for each community ---
+print("\n▶ Community-wise mean correlation coefficients (coherence):\n")
+coherence_dict = {}
+for comm in sorted(comm_df['Community'].unique()):
+    mirnas = comm_df[comm_df['Community'] == comm]['miRNA']
+    valid_mirnas = [m for m in mirnas if m in sub_data.index]
+    if len(valid_mirnas) < 2:
+        print(f"{comm}: Skipped (insufficient miRNAs)")
+        continue
+    expr_subset = sub_data.loc[valid_mirnas].T
+    corr_matrix = expr_subset.corr()
+    avg_corr = corr_matrix.where(~np.eye(corr_matrix.shape[0], dtype=bool)).mean().mean()
+    coherence_dict[comm] = avg_corr
+    print(f"{comm}: mean correlation = {avg_corr:.3f}")
+
+# --- Calculate variability (mean standard deviation) for each community ---
+print("\n▶ Community-wise mean standard deviation (expression variability):\n")
+variability_dict = {}
+for comm in sorted(comm_df['Community'].unique()):
+    mirnas = comm_df[comm_df['Community'] == comm]['miRNA']
+    valid_mirnas = [m for m in mirnas if m in sub_data.index]
+    if len(valid_mirnas) < 2:
+        print(f"{comm}: Skipped (insufficient miRNAs)")
+        continue
+    expr_subset = sub_data.loc[valid_mirnas]
+    std_series = expr_subset.std(axis=1)
+    mean_std = std_series.mean()
+    variability_dict[comm] = mean_std
+    print(f"{comm}: mean standard deviation = {mean_std:.2f}")
+
+# --- Report number of miRNAs per community ---
+print("\n▶ Number of miRNAs per community:\n")
+miRNA_counts = comm_df['Community'].value_counts().sort_index()
+for comm, count in miRNA_counts.items():
+    print(f"{comm}: miRNA count = {count}")
